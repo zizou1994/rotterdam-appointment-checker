@@ -1,129 +1,31 @@
-from selenium import webdriver 
-from selenium.webdriver.common.by import By 
-from selenium.webdriver.support.ui import WebDriverWait 
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import Select
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup 
-import time 
-import requests 
-import urllib.parse 
-import datetime
 import os
-import atexit
-import re
+import time
+import datetime
+import requests
+
+from bs4 import BeautifulSoup
 from dateutil import parser
 
-# Global WebDriver instance (singleton pattern to reuse browser)
-_driver_instance = None
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import Select
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-BOOKING_URL = "https://concern.ir.rotterdam.nl/afspraak/maken/product/indienen-naturalisatieverzoek"
+
+BOOKING_URL = (
+    "https://concern.ir.rotterdam.nl/afspraak/maken/"
+    "product/indienen-naturalisatieverzoek"
+)
 
 
-def github_run_url():
-    """Link to the current GitHub Actions run, or None when running locally."""
-    server = os.environ.get("GITHUB_SERVER_URL")
-    repo = os.environ.get("GITHUB_REPOSITORY")
-    run_id = os.environ.get("GITHUB_RUN_ID")
-    return f"{server}/{repo}/actions/runs/{run_id}" if server and repo and run_id else None
-
-def get_driver():
-    """Get or create a singleton WebDriver instance"""
-    global _driver_instance
-    
-    if _driver_instance is None:
-        print("Creating new Chrome WebDriver instance...")
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-        # Add memory optimization flags
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--disable-infobars")
-        chrome_options.add_argument("--disable-notifications")
-        chrome_options.add_argument("--disable-default-apps")
-        
-        _driver_instance = webdriver.Chrome(options=chrome_options)
-        print("Chrome WebDriver instance created successfully")
-        
-        # Register cleanup on exit
-        atexit.register(cleanup_driver)
-    
-    return _driver_instance
-
-def is_date_after_cutoff(date_string, cutoff_date):
-    """
-    Check if a date is after the specified cutoff date.
-    Tries to parse various date formats from the date_string.
-    Returns True if the date is after cutoff, False otherwise or if parsing fails.
-    """
-    try:
-        # Try to parse the date using dateutil parser which handles many formats
-        parsed_date = parser.parse(date_string, dayfirst=True, fuzzy=True)
-        
-        print(f"Parsed date: {parsed_date.strftime('%Y-%m-%d')}, Cutoff: {cutoff_date.strftime('%Y-%m-%d')}")
-        return parsed_date > cutoff_date
-    except Exception as e:
-        print(f"Could not parse date from '{date_string}': {e}")
-        # If we can't parse the date, err on the side of notifying
-        return True
-
-def get_date_filter():
-    """
-    Get the minimum date filter from environment variable.
-    Returns a datetime object if MIN_DATE_FILTER is set, None otherwise.
-    
-    MIN_DATE_FILTER format examples:
-    - "2024-12-21" (ISO format)
-    - "21-12-2024" or "21/12/2024" (day first)
-    - "December 21, 2024"
-    """
-    min_date_str = os.environ.get('MIN_DATE_FILTER', '').strip()
-    
-    if not min_date_str:
-        print("No MIN_DATE_FILTER set - will notify for all available appointments")
-        return None
-    
-    try:
-        # Parse the date from environment variable
-        cutoff_date = parser.parse(min_date_str, dayfirst=True)
-        print(f"Date filter enabled: Only notifying for appointments after {cutoff_date.strftime('%Y-%m-%d')}")
-        return cutoff_date
-    except Exception as e:
-        print(f"Warning: Could not parse MIN_DATE_FILTER '{min_date_str}': {e}")
-        print("Will notify for all available appointments")
-        return None
-
-def cleanup_driver():
-    """Clean up the WebDriver instance"""
-    global _driver_instance
-    if _driver_instance is not None:
-        try:
-            print("Cleaning up Chrome WebDriver...")
-            _driver_instance.quit()
-            _driver_instance = None
-            print("Chrome WebDriver cleaned up successfully")
-        except Exception as e:
-            print(f"Error cleaning up driver: {e}")
-
-def reset_driver():
-    """Reset the driver if it's in a bad state"""
-    global _driver_instance
-    if _driver_instance is not None:
-        cleanup_driver()
-    return get_driver()
-
-# Function to send a push notification via ntfy.sh with priority
-def send_notification_with_priority(message, title, priority="default"):
+def send_telegram_notification(message, title):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
     if not token or not chat_id:
-        print("Telegram configuration is missing.")
-        return
+        raise RuntimeError("Telegram credentials are missing.")
 
     text = f"{title}\n\n{message}"
 
@@ -132,255 +34,299 @@ def send_notification_with_priority(message, title, priority="default"):
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    try:
-        response = requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-                "reply_markup": {
-                    "inline_keyboard": [[
-                        {
-                            "text": "Open Rotterdam booking page",
-                            "url": BOOKING_URL
-                        }
-                    ]]
-                }
-            },
-            timeout=15
+    response = requests.post(
+        url,
+        json={
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {
+                        "text": "Open Rotterdam booking page",
+                        "url": BOOKING_URL
+                    }
+                ]]
+            }
+        },
+        timeout=20
+    )
+
+    response.raise_for_status()
+
+    result = response.json()
+
+    if not result.get("ok"):
+        raise RuntimeError("Telegram rejected the notification.")
+
+    print("Telegram notification sent successfully.")
+
+
+def create_driver():
+    print("Starting Chrome...")
+
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-notifications")
+
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(60)
+
+    return driver
+
+
+def select_one_person(driver):
+    print("Looking for number-of-people dropdown...")
+
+    dropdowns = driver.find_elements(By.TAG_NAME, "select")
+    number_dropdown = None
+
+    for dropdown in dropdowns:
+        try:
+            name = dropdown.get_attribute("name") or ""
+            element_id = dropdown.get_attribute("id") or ""
+            html = dropdown.get_attribute("outerHTML") or ""
+
+            if name in ("taal", "sortering"):
+                continue
+
+            if element_id in ("id2", "ida"):
+                continue
+
+            if (
+                "aantal" in html.lower()
+                or len(dropdown.find_elements(By.TAG_NAME, "option")) <= 5
+            ):
+                number_dropdown = dropdown
+                break
+
+        except Exception:
+            continue
+
+    if number_dropdown is None:
+        raise RuntimeError(
+            "Could not find the number-of-people dropdown."
         )
 
-        response.raise_for_status()
-        result = response.json()
+    select = Select(number_dropdown)
 
-        if not result.get("ok"):
-            raise RuntimeError("Telegram rejected the notification.")
+    print(
+        "Available options:",
+        [option.text for option in select.options]
+    )
 
-        print("Telegram notification sent successfully.")
+    select.select_by_value("0")
 
-    except Exception as e:
-        print(f"Error sending Telegram notification: {e}")
+    selected_value = select.first_selected_option.get_attribute("value")
+
+    if selected_value != "0":
+        raise RuntimeError("Could not select 1 person.")
+
+    print("Selected appointment for 1 person.")
+
+    time.sleep(1)
+
+
+def click_continue(driver):
+    print("Looking for the Verder button...")
+
+    buttons = driver.find_elements(By.TAG_NAME, "button")
+    continue_button = None
+
+    for button in buttons:
+        button_text = button.text.lower()
+
+        if "verder" in button_text or "continue" in button_text:
+            continue_button = button
+            break
+
+    if continue_button is None:
+        submit_buttons = driver.find_elements(
+            By.CSS_SELECTOR,
+            "button[type='submit'], input[type='submit']"
+        )
+
+        if submit_buttons:
+            continue_button = submit_buttons[0]
+
+    if continue_button is None:
+        raise RuntimeError("Could not find the Verder button.")
+
+    driver.execute_script(
+        "arguments[0].click();",
+        continue_button
+    )
+
+    print("Clicked Verder.")
+
+    time.sleep(5)
+
+
+def get_date_filter():
+    date_string = os.environ.get("MIN_DATE_FILTER", "").strip()
+
+    if not date_string:
+        print("No date filter configured.")
+        return None
+
+    cutoff = parser.parse(date_string, dayfirst=True)
+
+    print("Date filter:", cutoff.date())
+
+    return cutoff
+
+
+def date_is_after_cutoff(date_string, cutoff):
+    try:
+        appointment_date = parser.parse(
+            date_string,
+            dayfirst=True,
+            fuzzy=True
+        )
+
+        return appointment_date.date() > cutoff.date()
+
+    except Exception as error:
+        print(f"Could not parse appointment date: {error}")
+        return True
+
+
+def check_appointments(driver, cutoff):
+    print("Opening Rotterdam booking page...")
+
+    driver.get(BOOKING_URL)
+
+    WebDriverWait(driver, 30).until(
+        EC.presence_of_element_located((By.TAG_NAME, "body"))
+    )
+
+    time.sleep(3)
+
+    select_one_person(driver)
+
+    click_continue(driver)
+
+    print("Reading appointment results...")
+
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+
+    page_title = (
+        soup.title.get_text(strip=True)
+        if soup.title else "Unknown page"
+    )
+
+    available_dates = soup.find_all(
+        "button",
+        class_="list-group-item-action"
+    )
+
+    warning_alerts = [
+        alert
+        for alert in soup.find_all("div", class_="alert-warning")
+        if "laden" not in alert.get_text(" ", strip=True).lower()
+    ]
+
+    if not available_dates and not warning_alerts:
+        raise RuntimeError(
+            f"Unexpected results page. "
+            f"Title: {page_title}. "
+            f"URL: {driver.current_url}"
+        )
+
+    actual_slots = []
+
+    for date_button in available_dates:
+
+        if date_button.has_attr("disabled"):
+            continue
+
+        heading = date_button.find("h3")
+        paragraph = date_button.find("p")
+
+        location = heading.get_text(strip=True) if heading else ""
+        date_time = paragraph.get_text(strip=True) if paragraph else ""
+
+        date_time = (
+            date_time.replace("from ", "")
+            .replace("vanaf ", "")
+            .strip()
+        )
+
+        print(f"Found entry: {location} - {date_time}")
+
+        if "wachtrij" in date_time.lower():
+            print("Ignoring waiting-list entry.")
+            continue
+
+        if not date_time or len(date_time) < 5:
+            continue
+
+        if cutoff is not None:
+            if not date_is_after_cutoff(date_time, cutoff):
+                print("Ignoring appointment before date filter.")
+                continue
+
+        actual_slots.append(f"{location}: {date_time}")
+
+    if actual_slots:
+        message = (
+            "APPOINTMENT SLOTS AVAILABLE!\n\n"
+            + "\n".join(actual_slots)
+            + f"\n\nCheck immediately:\n{BOOKING_URL}"
+        )
+
+        print(message)
+
+        send_telegram_notification(
+            message,
+            "ROTTERDAM APPOINTMENTS AVAILABLE"
+        )
+
+    else:
+        print(
+            "No actual appointment slots found. "
+            "Waiting-list entries were ignored."
+        )
 
 
 def main():
-    """Main function to check appointments"""
-    # Get the date filter (if any)
-    date_cutoff = get_date_filter()
-    
-    # Get the reusable driver instance
-    try:
-        driver = get_driver()
-    except Exception as e:
-        print(f"Failed to get driver, attempting reset: {e}")
-        driver = reset_driver()
-    
-    # Open the URL
-    driver.get(BOOKING_URL) 
+    current_time = datetime.datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    print("=" * 50)
+    print("ROTTERDAM APPOINTMENT CHECKER")
+    print("Started:", current_time)
+    print("=" * 50)
+
+    driver = None
 
     try:
-        # Get the current date and time
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"Script started at: {current_time}")
+        cutoff = get_date_filter()
 
-        time.sleep(3)  # Wait for page to fully load
-        
-        # Try to find and interact with the form elements
-        # The form structure may have changed, so we'll try multiple approaches
-        
-        # First, check if we need to select number of people
-        try:
-            print("Looking for number of people dropdown...")
-            # Try to find any select dropdown on the page
-            dropdowns = driver.find_elements(By.TAG_NAME, "select")
-            
-            number_dropdown = None
-            for dropdown in dropdowns:
-                try:
-                    dropdown_name = dropdown.get_attribute('name') or ''
-                    dropdown_id = dropdown.get_attribute('id') or ''
-                    if dropdown_name in ('taal', 'sortering') or dropdown_id in ('id2', 'ida'):
-                        continue
-                    dropdown_html = dropdown.get_attribute('outerHTML')
-                    if 'aantal' in dropdown_html.lower() or len(dropdown.find_elements(By.TAG_NAME, "option")) <= 5:
-                        number_dropdown = dropdown
-                        print(f"Found potential number dropdown: {dropdown_id}")
-                        break
-                except:
-                    continue
-            
-            if number_dropdown:
-                select = Select(number_dropdown)
-select.select_by_value("0")
-print("Selected appointment for 1 person")
-time.sleep(1)
-                select = Select(number_dropdown)
-                # Try to select by visible text first (more reliable)
-                options = select.options
-                print(f"Available options: {[opt.text for opt in options]}")
-                
-                # Look for option with "2" in it
-                for i, option in enumerate(options):
-                    if "2" in option.text and "persoon" in option.text.lower() or option.get_attribute('value') == "1":
-                        select.select_by_index(i)
-                        print(f"Selected option: {option.text}")
-                        break
-                
-                time.sleep(1)
-            else:
-                print("No number of people dropdown found - form may have changed or not needed")
-        except Exception as e:
-            print(f"Could not find/interact with number dropdown: {e}")
-            print("Continuing anyway - form may have changed")
-        
-        # Try to find and click the "Verder" (Continue) button
-        try:
-            print("Looking for submit/continue button...")
-            time.sleep(1)
-            
-            # Try multiple ways to find the button
-            verder_button = None
-            
-            # Method 1: Try by text content
-            buttons = driver.find_elements(By.TAG_NAME, "button")
-            for button in buttons:
-                if "verder" in button.text.lower() or "continue" in button.text.lower():
-                    verder_button = button
-                    print(f"Found button by text: {button.text}")
-                    break
-            
-            # Method 2: Try by type="submit"
-            if not verder_button:
-                submit_buttons = driver.find_elements(By.CSS_SELECTOR, "button[type='submit'], input[type='submit']")
-                if submit_buttons:
-                    verder_button = submit_buttons[0]
-                    print("Found submit button")
-            
-            if verder_button:
-                # Use JavaScript click to avoid interception issues
-                driver.execute_script("arguments[0].click();", verder_button)
-                print("Clicked continue button")
-                time.sleep(3)
-            else:
-                print("No continue button found - may already be on results page")
-        except Exception as e:
-            print(f"Could not find/click continue button: {e}")
-            print("May already be on results page or form changed")
-        
-        # Wait for results page to load completely
-        print("Waiting for results to load...")
-        time.sleep(2)
+        driver = create_driver()
 
-        # Parse the updated HTML content with BeautifulSoup
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        check_appointments(driver, cutoff)
 
-        # Look for all buttons with class 'list-group-item-action' and not disabled
-        available_dates = soup.find_all('button', class_='list-group-item-action')
+        print("Appointment check completed successfully.")
 
-        # Check for alert warning (no dates available). Ignore the "Laden..."
-        # loading spinner, which the first form page also renders as alert-warning.
-        alert_no_dates = [
-            alert for alert in soup.find_all('div', class_='alert-warning')
-            if 'laden' not in alert.get_text(" ", strip=True).lower()
-        ]
+    except Exception as error:
+        print(f"ERROR: {error}")
+        raise
 
-        # Fail loudly when the results page doesn't look as expected, so a site
-        # change shows up as an error push instead of "no slots" on every run.
-        page_title = soup.title.get_text(strip=True) if soup.title else "?"
-        if not available_dates and not alert_no_dates:
-            raise RuntimeError(
-                f"Parsing failed: no location buttons and no 'no dates' alert on results page "
-                f"(title: '{page_title}', url: {driver.current_url}). Site layout may have changed."
-            )
-        if available_dates and all(not b.find('h3') or not b.find('p') for b in available_dates):
-            raise RuntimeError(
-                f"Parsing failed: {len(available_dates)} location button(s) found but none have the "
-                f"expected <h3> location / <p> date layout (title: '{page_title}'). Site layout may have changed."
-            )
-
-        if alert_no_dates:
-            message_first_part = "No available dates alert found."
-            print(message_first_part)
-        else:
-            message_first_part = "Found something."
-            print(message_first_part)
-
-        # Filter out "Wachtrij beschikbaar" (waiting list) entries and optionally filter by date
-        actual_available_slots = []
-        
-        if available_dates:
-            for date_button in available_dates:
-                if date_button.get('disabled') is None:
-                    location = date_button.find('h3').text.strip() if date_button.find('h3') else ""
-                    date_time_elem = date_button.find('p')
-                    date_time = date_time_elem.text.strip() if date_time_elem else ""
-                    
-                    # Clean up the date/time text (remove "from" prefix if present)
-                    date_time = date_time.replace('from ', '').replace('vanaf ', '').strip()
-                    
-                    print(f"Found slot: {location} - {date_time}")
-                    
-                    # Skip if it's a waiting list entry
-                    if "Wachtrij beschikbaar" in date_time or "wachtrij" in date_time.lower():
-                        print(f"  -> Skipping: waiting list entry")
-                        continue
-                    
-                    # Skip if no actual date/time found
-                    if not date_time or len(date_time) < 5:
-                        print(f"  -> Skipping: no valid date/time")
-                        continue
-                    
-                    # Check if the date is after cutoff (only if cutoff is set)
-                    if date_cutoff is not None:
-                        if not is_date_after_cutoff(date_time, date_cutoff):
-                            print(f"  -> Skipping: before cutoff date")
-                            continue
-                    
-                    # This is an actual available slot (and after cutoff if filter is set)!
-                    print(f"  -> Adding to available slots!")
-                    actual_available_slots.append(f"{location}: {date_time}")
-
-        if actual_available_slots:
-            # We found actual appointment slots!
-            date_info = "\n".join(actual_available_slots)
-            
-            # Create message with optional date filter info
-            if date_cutoff:
-                filter_msg = f" (After {date_cutoff.strftime('%B %d, %Y')})"
-                title_filter = f" (After {date_cutoff.strftime('%b %d')})"
-            else:
-                filter_msg = ""
-                title_filter = ""
-            
-            message = f"🎉🎉🎉 APPOINTMENT SLOTS AVAILABLE{filter_msg}! 🎉🎉🎉\n\n{date_info}\n\nCheck immediately:\n{BOOKING_URL}\n\nMessage Sent at: {current_time}"
-            print(message)
-            
-            # Send the notification with high priority and special title
-            send_notification_with_priority(message, f"🎉 SLOTS AVAILABLE{title_filter}!", "urgent")
-        else:
-            if date_cutoff:
-                print(f"No appointment slots found after {date_cutoff.strftime('%Y-%m-%d')}.")
-            else:
-                print("No actual appointment slots found (only waiting list or nothing).")
-            print(f"Check completed at: {current_time} - No notification sent")
-
-    except Exception as e:
-        error_message = f"❌ ERROR: Script failed with exception: {str(e)}\nTime: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        print(error_message)
-        send_notification_with_priority(error_message, "❌ Script Error", "high")
-        
-        # Reset driver on error
-        print("Resetting driver due to error...")
-        reset_driver()
-    
     finally:
-        # Don't close the driver - reuse it for next run
-        # Just navigate away to clear state
-        try:
-            driver.get("about:blank")
-        except:
-            pass
-        print("Check completed, driver ready for next run")
+        if driver is not None:
+            try:
+                driver.quit()
+                print("Chrome closed.")
+            except Exception as error:
+                print(f"Could not close Chrome: {error}")
+
 
 if __name__ == "__main__":
     main()
