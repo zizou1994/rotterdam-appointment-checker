@@ -118,55 +118,49 @@ def reset_driver():
 
 # Function to send a push notification via ntfy.sh with priority
 def send_notification_with_priority(message, title, priority="default"):
-    # Get the ntfy topic from environment variable (or use default)
-    ntfy_topic = os.environ.get('NTFY_TOPIC', 'rotterdam-appointments-default')
-    ntfy_url = f'https://ntfy.sh/{ntfy_topic}'
-    
-    # Set tags based on priority
-    if priority == "urgent":
-        tags = "tada,rotating_light,calendar"
-        priority_val = "urgent"
-    elif priority == "high":
-        tags = "x,warning"
-        priority_val = "high"
-    else:
-        tags = "clipboard,calendar"
-        priority_val = "default"
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
-    # Tapping the notification opens the booking page; errors open the run
-    # logs instead (when on GitHub Actions) and keep a booking-page button.
-    booking_action = f"view, Open booking page, {BOOKING_URL}"
-    run_url = github_run_url()
-    if priority == "high" and run_url:
-        click_url = run_url
-        actions = f"view, Open run logs, {run_url}; {booking_action}"
-    else:
-        click_url = BOOKING_URL
-        actions = booking_action
+    if not token or not chat_id:
+        print("Telegram configuration is missing.")
+        return
+
+    text = f"{title}\n\n{message}"
+
+    if len(text) > 4000:
+        text = text[:3990] + "..."
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
 
     try:
-        # Use query parameters for better emoji support
-        params = {
-            'title': title,
-            'priority': priority_val,
-            'tags': tags,
-            'click': click_url,
-            'actions': actions,
-        }
-        
         response = requests.post(
-            ntfy_url,
-            data=message.encode('utf-8'),
-            params=params,
-            timeout=10
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+                "reply_markup": {
+                    "inline_keyboard": [[
+                        {
+                            "text": "Open Rotterdam booking page",
+                            "url": BOOKING_URL
+                        }
+                    ]]
+                }
+            },
+            timeout=15
         )
-        
-        if response.status_code == 200:
-            print(f"Notification sent successfully to ntfy topic: {ntfy_topic}")
-        else:
-            print(f"Failed to send notification. Status code: {response.status_code}, response: {response.text}")
+
+        response.raise_for_status()
+        result = response.json()
+
+        if not result.get("ok"):
+            raise RuntimeError("Telegram rejected the notification.")
+
+        print("Telegram notification sent successfully.")
+
     except Exception as e:
-        print(f"Error sending notification: {e}")
+        print(f"Error sending Telegram notification: {e}")
 
 
 def main():
@@ -216,7 +210,10 @@ def main():
                     continue
             
             if number_dropdown:
-                # Select the option for 2 people
+                select = Select(number_dropdown)
+select.select_by_value("0")
+print("Selected appointment for 1 person")
+time.sleep(1)
                 select = Select(number_dropdown)
                 # Try to select by visible text first (more reliable)
                 options = select.options
